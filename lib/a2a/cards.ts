@@ -8,6 +8,7 @@ export const PROTOCOL_VERSION = "1.0";
 export const EXT_CLINIC_OPERATION = "https://pibu.app/ext/clinic-operation/v1";
 export const EXT_REFERRAL = "https://pibu.app/ext/referral/v1";
 export const EXT_CONSENT = "https://pibu.app/ext/consent/v1";
+export const EXT_ZK_OFFER_PROOF = "https://pibu.app/ext/zk-offer-proof/v1";
 export const DOCUMENTATION_URL = "https://github.com/goranyseoul/jongro3ga/blob/main/docs/spec/03-a2a-protocol.md";
 
 /**

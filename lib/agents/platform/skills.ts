@@ -18,7 +18,7 @@ import { newId } from "../../a2a/tasks";
 import type { AttributionEntry, JudgedQuote, MatchLog, Outcome, Signal } from "../../domain";
 import { checkEligibility } from "./eligibility";
 import { judgeQuote, normalizeQuote } from "./fairness";
-import { matchClinics, type MatchClinicInput } from "./matching";
+import { displayStats, matchClinics, type MatchClinicInput } from "./matching";
 import { refreshOfferCache } from "./offers";
 import { checkOutcomeCaller, priceRecordFromOutcome, quoteGapRatio, signalsForOutcome } from "./outcomes";
 import { platformStore } from "./store";
@@ -36,12 +36,14 @@ export const matchClinicsSkill: SkillHandler = async (data, ctx) => {
   const registry = await platformStore.registry();
   const verified = registry.filter((r) => r.verificationStatus === "verified" && r.foreignPatientFacilityRegistered);
   const { cache } = await refreshOfferCache({ entries: verified });
-  const [outcomes, signals, matchLogs, records, rules] = await Promise.all([
+  const [outcomes, signals, matchLogs, records, rules, visits, reviews] = await Promise.all([
     platformStore.outcomes(),
     platformStore.signals(),
     platformStore.matchLogs(),
     platformStore.priceRecords(),
     platformStore.rules(),
+    platformStore.verifiedVisits(),
+    platformStore.reviewStats(),
   ]);
 
   const clinics: MatchClinicInput[] = registry.map((entry) => ({
@@ -71,6 +73,8 @@ export const matchClinicsSkill: SkillHandler = async (data, ctx) => {
       score: c.score,
       reasons: c.reasons,
       referralToken: token,
+      // Display only, never scored (07 "검증 방문과 후기 집계").
+      ...displayStats(c.clinicId, request.procedureId, visits, reviews),
     });
   }
 

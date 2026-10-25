@@ -71,6 +71,23 @@ describe("platform.match_clinics over A2A", () => {
     expect(log!.candidatesBeforeRules.map((c) => c.clinicId)).toEqual(["cln_seoul_glow", "cln_mint", "cln_ara"]);
   });
 
+  it("adds verifiedVisits and reviewStats for display only, and leaves reviewStats out below 3 reviews", async () => {
+    const first = await match();
+    const [glow, mint, ara] = first.shortlist.candidates;
+    expect(glow).toMatchObject({ verifiedVisits: 1240, reviewStats: { n: 18, avgRating: 4.6 } });
+    expect(mint).toMatchObject({ verifiedVisits: 980, reviewStats: { n: 6, avgRating: 3.5 } });
+    expect(ara).toMatchObject({ verifiedVisits: 640, reviewStats: { n: 5, avgRating: 3 } });
+
+    const mintStat = (await platformStore.reviewStats()).find((r) => r.clinicId === "cln_mint" && r.procedureId === "rejuran_healer")!;
+    await platformStore.putReviewStats({ ...mintStat, n: 2, nullifiers: mintStat.nullifiers.slice(0, 2), reviews: mintStat.reviews.slice(0, 2) });
+    const second = await match(YUKI, { ...yukiRequest, requestId: "req_yuki02" });
+    const mintAgain = second.shortlist.candidates.find((c) => c.clinicId === "cln_mint")!;
+    expect(mintAgain.verifiedVisits).toBe(980);
+    expect(mintAgain.reviewStats).toBeUndefined();
+    // Never scored: the order and the scores stay the same.
+    expect(second.shortlist.candidates.map((c) => [c.clinicId, c.score])).toEqual(first.shortlist.candidates.map((c) => [c.clinicId, c.score]));
+  });
+
   it("fills the offer cache through clinic.offers A2A calls, kept out of the customer's timeline", async () => {
     await match();
     expect((await platformStore.offerCache()).map((c) => c.clinicId).sort()).toEqual(["cln_ara", "cln_dahye", "cln_hanbit", "cln_mint", "cln_seoul_glow"]);

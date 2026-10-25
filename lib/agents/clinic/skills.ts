@@ -14,8 +14,9 @@ import type {
 } from "../../a2a/schemas";
 import { clock } from "../../clock";
 import type { ClinicProfile } from "../../domain/clinic";
-import { verifyOffer, zkEnabled, type ZkOfferProofBundle } from "../../zk";
+import { zkEnabled } from "../../zk";
 import { ACCEPT_PROPOSED_SLOT, announceConfirmation, holdSlot, releaseSlot } from "./booking";
+import { checkOfferProof, type ProofCheck } from "./offer-proof";
 import { freeSlots, quoteValidUntil, selectQuoteItem } from "./quote";
 import { ensureClinicData } from "./seed";
 import {
@@ -82,14 +83,10 @@ async function checkReferral(
   return { ok: true, claims, token };
 }
 
-/** metadata.zkOfferProof is either the bundle itself or a pibu/offer-proof@1 wrapper (docs/INTEGRATION.md 4절). */
-function zkBundleOf(metadata: Record<string, unknown>): ZkOfferProofBundle | null {
-  const raw = metadata.zkOfferProof;
-  if (!raw || typeof raw !== "object") return null;
-  const candidate = (raw as { bundle?: unknown }).bundle ?? raw;
-  if (!candidate || typeof candidate !== "object") return null;
-  const bundle = candidate as Partial<ZkOfferProofBundle>;
-  return typeof bundle.offerId === "string" && Array.isArray(bundle.proofs) ? (bundle as ZkOfferProofBundle) : null;
+/** Inbox summary suffix for the offer proof result; empty when the customer attached none. */
+function proofNote(proof: ProofCheck): string {
+  if (proof.verified) return " · 오퍼 증명 확인";
+  return proof.reason === "no_proof" ? "" : ` · 오퍼 증명 미적용 (${proof.reason})`;
 }
 
 // ---- clinic.offers ----
@@ -130,6 +127,7 @@ const offers: SkillHandler = async (data, ctx) => {
           validFrom: offer.validFrom,
           validUntil: offer.validUntil,
           conditions: offer.conditions,
+          ...(offer.zkClauses?.length ? { zkClauses: offer.zkClauses } : {}),
         },
       };
     }),
@@ -162,33 +160,24 @@ const quote: SkillHandler = async (data, ctx) => {
     return referral.result;
   }
 
-  // ZK hook (docs/INTEGRATION.md 4절): verify before applying an offer discount. Only when the layer is on and
-  // the customer attached a proof; with ZK off nothing here changes the quote.
-  let allowEvents = true;
-  let preferOfferId: string | undefined;
-  let zkNote = "";
-  const bundle = zkEnabled() ? zkBundleOf(ctx.metadata) : null;
-  if (bundle) {
-    let ok = false;
-    try {
-      ok = (await verifyOffer(clinic.id, bundle))?.ok === true;
-    } catch {
-      ok = false;
-    }
-    allowEvents = ok;
-    preferOfferId = ok ? bundle.offerId : undefined;
-    zkNote = ok ? " · 오퍼 증명 확인" : " · 오퍼 증명 실패, 정가";
+  // Offer proof (docs/INTEGRATION.md 4절), in code, right after the referral token and before the item choice.
+  // A proof that fails for any reason only keeps proof-only events off: the quote is the regular price, the
+  // customer sees no error, and the reason goes to the server log and the inbox summary.
+  const today = clock.today();
+  const [menu, offers] = await Promise.all([db.menu(clinic.id), db.offers(clinic.id)]);
+  const proof = await checkOfferProof({ clinicId: clinic.id, procedureId: request.procedureId, offers, today, metadata: ctx.metadata });
+  if (!proof.verified && proof.reason !== "no_proof") {
+    console.warn(`[clinic] ${clinic.id} offer proof not applied: ${proof.reason}`, { offerId: proof.offerId, detail: proof.detail });
   }
 
-  const today = clock.today();
   const selection = selectQuoteItem({
     procedureId: request.procedureId,
     amount: request.amount,
     today,
-    menu: await db.menu(clinic.id),
-    offers: await db.offers(clinic.id),
-    allowEvents,
-    preferOfferId,
+    menu,
+    offers,
+    verifiedOfferId: proof.verified ? proof.offerId : undefined,
+    proofsRequired: zkEnabled(),
   });
   if (!selection) {
     const result = rejected(`procedure_not_offered: ${request.procedureId} is not on this clinic's menu`);
@@ -211,6 +200,7 @@ const quote: SkillHandler = async (data, ctx) => {
     includes: selection.includes,
     excludes: selection.excludes,
     ...(selection.event ? { event: selection.event } : {}),
+    ...(selection.offerApplied ? { offerApplied: selection.offerApplied } : {}),
     slots,
     languages: clinic.languages.map((language) => language.locale),
     indicative: operation.mode === "proxy",
@@ -226,7 +216,7 @@ const quote: SkillHandler = async (data, ctx) => {
     amount: quoteV1.amount,
     priceKrw: quoteV1.priceKrw,
     quoteId: quoteV1.quoteId,
-    summary: `${selection.source === "event" ? "이벤트" : "메뉴"} 견적${zkNote}`,
+    summary: `${selection.source === "event" ? "이벤트" : "메뉴"} 견적${proofNote(proof)}`,
   });
   return { state: "TASK_STATE_COMPLETED", data: quoteV1 };
 };

@@ -1,6 +1,7 @@
 // Clinic console service (05-screens.md 병원 콘솔): reads and edits the clinic's own data for app/api/clinic/**
 // and the console's server pages. Edits land in namespace "clinic", so the next clinic.quote and clinic.offers
 // answer with them. Also the entry point the ops proxy queue uses to list pending proxy bookings.
+import { ZkClauseSchema } from "../../a2a/schemas";
 import { getSessionUser } from "../../auth/session";
 import { clock } from "../../clock";
 import type { Area, Locale } from "../../domain/common";
@@ -320,6 +321,7 @@ function offerView(offer: StoredOffer): Offer {
     validUntil: offer.validUntil,
     conditions: offer.conditions,
     active: offer.active !== false,
+    ...(offer.zkClauses?.length ? { zkClauses: offer.zkClauses } : {}),
   };
 }
 
@@ -361,6 +363,12 @@ export async function saveMenuItem(
  * Adds or edits an event. Title, regular price, period and conditions are all required (Medical Act enforcement
  * decree art. 23, 08-compliance.md), and the event price must be below the regular price.
  */
+function validClauses(value: unknown): Offer["zkClauses"] {
+  const parsed = ZkClauseSchema.array().safeParse(value);
+  if (!parsed.success) throw new ConsoleError("증명 조건 형식이 맞지 않아요", 400);
+  return parsed.data;
+}
+
 export async function saveOffer(clinicId: string, input: Partial<Offer>): Promise<MenuData> {
   const db = clinicStore();
   await loadClinic(clinicId, db);
@@ -379,6 +387,8 @@ export async function saveOffer(clinicId: string, input: Partial<Offer>): Promis
 
   const existing = typeof input.id === "string" ? await db.offer(input.id) : undefined;
   if (existing && existing.clinicId !== clinicId) throw new ConsoleError(`offer ${input.id} not found`, 404);
+  // Proof conditions (ZK extension): the event sheet sends zkClauses; an edit without the field keeps the stored ones
+  const zkClauses = input.zkClauses === undefined ? existing?.zkClauses : validClauses(input.zkClauses);
   await db.putOffer({
     id: existing?.id ?? newId("of"),
     clinicId,
@@ -391,6 +401,7 @@ export async function saveOffer(clinicId: string, input: Partial<Offer>): Promis
     validUntil: input.validUntil,
     conditions,
     active: input.active !== false,
+    ...(zkClauses?.length ? { zkClauses } : {}),
   });
   return getMenu(clinicId);
 }

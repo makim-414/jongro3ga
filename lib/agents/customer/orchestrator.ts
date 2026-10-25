@@ -5,24 +5,27 @@ import {
   ClinicShortlistV1Schema,
   FairnessVerdictListV1Schema,
   InputRequestV1Schema,
+  OfferProofV1Schema,
   OutcomeV1Schema,
   ProcedureRequestV1Schema,
   QuoteV1Schema,
   RecipeV1Schema,
   type FairnessVerdictV1,
   type InputRequestV1,
+  type OfferProofV1,
   type OutcomeV1,
   type ProcedureRequestV1,
   type QuoteV1,
   type SignalReportV1,
 } from "../../a2a/schemas";
 import { taskCompleter as a2aTaskCompleter } from "../../a2a/tasks";
-import { firstDataPart, isTerminalState, taskArtifactData, type WireTask } from "../../a2a/wire";
+import { firstDataPart, isTerminalState, taskArtifactData, taskArtifactText, type WireTask } from "../../a2a/wire";
 import { clock } from "../../clock";
 import type { Amount, Area, IsoDate, Locale } from "../../domain/common";
 import type { CustomerAccount, CustomerProfile, TreatmentRecord } from "../../domain/customer";
 import { getStore } from "../../store";
 import type { Store } from "../../store/types";
+import { ZK_CHAIN } from "../../ui-data/customer";
 import { matchOffers, proveOffer, zkEnabled, type ZkOfferProofBundle } from "../../zk";
 import { clinicEntry } from "./clinic-directory";
 import { ConsentError, bookingRequestFor, clinicRequestCopy, consentedAnswers, consentsOf, mayShareOutcome, platformRequestCopy } from "./consent";
@@ -30,7 +33,7 @@ import { bookingConfirmedText, checkinDueText } from "./copy";
 import { addRecord, renumber } from "./records";
 import { fallbackAmount, masterProcedureId, sameProcedure } from "./procedures";
 import { canMatchProfile } from "./seed";
-import { d0AnchorFor } from "./anchor";
+import { ANCHOR_TIMEOUT_MS, anchoredTx, d0AnchorFor, d0AnchorRequest, isRelayedAnchor } from "./anchor";
 import { addDays, checkinDueAt } from "./schedule";
 import {
   C,
@@ -114,7 +117,7 @@ class TimeoutError extends Error {
   }
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new TimeoutError()), ms);
@@ -122,7 +125,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-function isTimeout(error: unknown): boolean {
+export function isTimeout(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return error.name === "TimeoutError" || error.name === "AbortError" || /time(d)?\s?out/i.test(error.message);
 }
@@ -359,6 +362,26 @@ async function eligibleOffers(deps: OrchestratorDeps, persona: string | undefine
   return byClinic;
 }
 
+/**
+ * metadata.offerProof of clinic.quote (03 zk-offer-proof/v1, INTEGRATION 3): the wallet bundle as pibu/offer-proof@1,
+ * naming the clinic, chain and registry. A bundle that does not fit the wire schema goes as it is; the clinic reads
+ * both shapes.
+ */
+function offerProofFor(bundle: ZkOfferProofBundle, clinicId: string): OfferProofV1 | ZkOfferProofBundle {
+  const chainId = Number(process.env.ZK_CHAIN_ID);
+  const parsed = OfferProofV1Schema.safeParse({
+    schema: "pibu/offer-proof@1",
+    offerId: bundle.offerId,
+    clinicId,
+    subjectId: bundle.subjectId,
+    chainId: Number.isInteger(chainId) && chainId > 0 ? chainId : ZK_CHAIN.chainId,
+    registry: process.env.ZK_REGISTRY_ADDRESS || ZK_CHAIN.registry,
+    today: bundle.today,
+    proofs: bundle.proofs,
+  });
+  return parsed.success ? parsed.data : bundle;
+}
+
 type QuoteOutcome =
   | { kind: "quote"; candidate: StoredCandidate; quote: QuoteV1; taskId: string }
   | { kind: "rejection"; candidate: StoredCandidate; taskId?: string; reason?: string }
@@ -430,6 +453,8 @@ export async function runRequest(deps: OrchestratorDeps, customerId: string, req
 
   const askClinic = async (candidate: StoredCandidate): Promise<QuoteOutcome> => {
     const metadata: Record<string, unknown> = { referralToken: candidate.referralToken };
+    // Only a clinic with an eligible offer gets a proof. The clinic card's zk-offer-proof extension is not
+    // checked here: cards are fetched and cached inside the A2A client, out of the orchestrator's reach.
     const offerId = offers.get(candidate.clinicId);
     if (offerId && persona) {
       let bundle: ZkOfferProofBundle | null = null;
@@ -439,7 +464,7 @@ export async function runRequest(deps: OrchestratorDeps, customerId: string, req
         bundle = null;
       }
       if (bundle) {
-        metadata.zkOfferProof = bundle;
+        metadata.offerProof = offerProofFor(bundle, candidate.clinicId);
         shortlist.zkProofClinicIds.push(candidate.clinicId);
       }
     }
@@ -785,6 +810,41 @@ async function sendOutcome(deps: OrchestratorDeps, profile: CustomerProfile, req
   }
 }
 
+/**
+ * platform.anchor_record for a D0 visit of a customer with a record wallet (INTEGRATION 4 step 4): the platform
+ * relays the append through GlowPass and answers "anchored <tx>". Undefined, with the reason logged, when ZK is not
+ * configured, the platform refuses or fails, or nothing comes back in time; the caller keeps the demo anchor then.
+ */
+async function anchorD0(deps: OrchestratorDeps, profile: CustomerProfile, booking: StoredBooking): Promise<string | undefined> {
+  const visit = booking.booking;
+  if (!visit) return undefined;
+  const data = await d0AnchorRequest(deps.store, profile, { bookingId: visit.bookingId, clinicId: booking.clinicId, procedureId: booking.procedureId });
+  if (!data) return undefined;
+  const keepDemo = (reason: string) => {
+    console.warn(`[customer] ${visit.bookingId} keeps the demo anchor: ${reason}`);
+    return undefined;
+  };
+  if (!deps.zk.enabled()) return keepDemo("ZK_SERVER_URL is not set");
+  try {
+    const task = await withTimeout(
+      deps.send({
+        from: selfRef(profile),
+        toCardUrl: platformCard(deps),
+        skillId: "platform.anchor_record",
+        data,
+        text: `Anchor the D0 record of ${visit.bookingId}.`,
+        contextId: booking.requestId,
+        timeoutMs: ANCHOR_TIMEOUT_MS,
+      }),
+      ANCHOR_TIMEOUT_MS,
+    );
+    const detail = statusText(task) ?? taskArtifactText(task);
+    return anchoredTx(task) ?? keepDemo(detail ? `${task.status.state}: ${detail}` : task.status.state);
+  } catch (error) {
+    return keepDemo(isTimeout(error) ? "no answer in time" : error instanceof Error ? error.message : String(error));
+  }
+}
+
 /** D0 record: pibu/outcome@1 to the platform (with consent), the booked procedure into the records, D7/D30 due. */
 export async function submitOutcome(deps: OrchestratorDeps, customerId: string, bookingId: string, form: OutcomeForm): Promise<OutcomeResult> {
   const { store } = deps;
@@ -834,8 +894,17 @@ export async function submitOutcome(deps: OrchestratorDeps, customerId: string, 
   });
 
   const day = booking.slot.slice(0, 10);
-  // The clinic-confirmed visit is appended to the chart on the chain (ZK record layer)
-  const anchor = await d0AnchorFor(store, customerId);
+  // The clinic-confirmed visit is appended to the chart on the chain (ZK record layer). Only a shared outcome the
+  // platform accepted is anchored through it (its booking check needs the D0 outcome); the tx it relays replaces the
+  // demo one. A resubmitted D0 keeps the tx its visit already has, since the platform anchors a booking once.
+  const recordId = `rec_${booking.id}`;
+  const previous = (await getOf<TreatmentRecord>(store, C.records, recordId))?.anchor;
+  let anchor = await d0AnchorFor(store, customerId);
+  if (isRelayedAnchor(previous)) anchor = previous;
+  else if (anchor && sent) {
+    const tx = await anchorD0(deps, profile, booking);
+    if (tx) anchor = { ...anchor, tx };
+  }
   const record = await addRecord(
     store,
     customerId,
@@ -849,7 +918,7 @@ export async function submitOutcome(deps: OrchestratorDeps, customerId: string, 
       rating: Math.min(5, Math.max(1, Math.round(form.satisfaction))) as TreatmentRecord["rating"],
       ...(outcome.comment ? { note: outcome.comment } : {}),
     },
-    { id: `rec_${booking.id}`, source: "booking", sharedToPlatform: sent, ...(anchor ? { anchor } : {}) },
+    { id: recordId, source: "booking", sharedToPlatform: sent, ...(anchor ? { anchor } : {}) },
   );
   await renumber(store, customerId, masterProcedureId(booking.procedureId));
 

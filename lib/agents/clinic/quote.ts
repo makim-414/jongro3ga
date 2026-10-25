@@ -1,7 +1,10 @@
-// clinic.quote item selection (07-platform-intelligence.md "병원 에이전트의 견적 항목 선택").
-// Pure functions: the skill handler loads the clinic data and the clock, these decide.
+// clinic.quote item selection (07-platform-intelligence.md "병원 에이전트의 견적 항목 선택"), with the ZK rule of
+// 03 "ZK 확장 필드": an event with zkClauses applies only when its offer proof was verified (offer-proof.ts).
+// Pure functions: the skill handler loads the clinic data, the clock and the proof result, these decide.
+import type { ZkClause } from "../../a2a/schemas";
 import type { Amount, IsoDate, Krw } from "../../domain/common";
-import type { MenuItem, Slot } from "../../domain/clinic";
+import type { MenuItem, Offer, Slot } from "../../domain/clinic";
+import { getProcedure } from "../../domain/procedure-master";
 import type { StoredOffer } from "./store";
 
 /** Inclusion codes used on the wire (03 quote example: numbing_cream, soothing_mask). */
@@ -13,6 +16,8 @@ export interface QuoteEvent {
   validFrom: IsoDate;
   validUntil: IsoDate;
   conditions: string;
+  /** Only on an event that applies by proof alone (03 `event.zkClauses`). */
+  zkClauses?: ZkClause[];
 }
 
 export interface QuoteSelection {
@@ -24,6 +29,8 @@ export interface QuoteSelection {
   includes: string[];
   excludes: string[];
   event?: QuoteEvent;
+  /** Only when the clinic verified an offer proof and applied the event price (03 `quote.offerApplied`). */
+  offerApplied?: { offerId: string; verified: true };
   offerId?: string;
   menuItemId?: string;
 }
@@ -34,10 +41,19 @@ export interface SelectInput {
   today: IsoDate;
   menu: MenuItem[];
   offers: StoredOffer[];
-  /** false when an offer needed a ZK proof that did not verify: quote the regular price instead. */
-  allowEvents?: boolean;
-  /** Offer the customer proved eligibility for (ZK bundle offerId), preferred over the closest one. */
-  preferOfferId?: string;
+  /** Offer whose proof the clinic verified for this request (checkOfferProof in offer-proof.ts). */
+  verifiedOfferId?: string;
+  /**
+   * False when no ZK server is configured (ZK_SERVER_URL unset, as on the Vercel demo): nobody can prove anything
+   * there, so proof-only events apply like plain events and the quote looks as it did before the ZK port
+   * (owner decision 2026-10-24 evening, BUILD-LOG P12). Default true.
+   */
+  proofsRequired?: boolean;
+}
+
+/** An event with zkClauses applies only with a verified offer proof (03 "ZK 확장 필드"). */
+export function isProofOnly(offer: Pick<Offer, "zkClauses">): boolean {
+  return (offer.zkClauses?.length ?? 0) > 0;
 }
 
 /** Offers that run today and are switched on, for one procedure. */
@@ -68,39 +84,55 @@ function menuFor(offer: StoredOffer, menu: MenuItem[]): MenuItem | undefined {
   return forProcedure.find((item) => sameAmount(item.amount, offer.amount)) ?? forProcedure[0];
 }
 
+/** An event has no product of its own: the clinic's menu item for it, then the procedure master name, then the title. */
+function eventProduct(offer: StoredOffer, facts: MenuItem | undefined): string {
+  return facts?.product ?? getProcedure(offer.procedureId)?.name.en ?? offer.title;
+}
+
+function eventSelection(offer: StoredOffer, menu: MenuItem[], gated = true): QuoteSelection {
+  const facts = menuFor(offer, menu);
+  const includes = facts?.includes ?? [];
+  return {
+    source: "event",
+    product: eventProduct(offer, facts),
+    amount: offer.amount,
+    priceKrw: offer.priceKrw,
+    vatIncluded: facts?.vatIncluded ?? true,
+    includes,
+    excludes: excludesOf(includes),
+    event: {
+      title: offer.title,
+      regularPriceKrw: offer.regularPriceKrw,
+      validFrom: offer.validFrom,
+      validUntil: offer.validUntil,
+      conditions: offer.conditions,
+      ...(gated && isProofOnly(offer) ? { zkClauses: offer.zkClauses } : {}),
+    },
+    offerId: offer.id,
+    menuItemId: facts?.id,
+  };
+}
+
 /**
- * 1. A running event for the procedure wins, at the event's own amount (Mint answers a 2cc request with its 1cc event).
+ * 0. A running proof-only event whose proof verified: that event plus offerApplied.
+ * 1. Otherwise a running event without zkClauses wins, at the event's own amount (a 2cc request gets a 1cc event).
  * 2. Otherwise the menu item closest to the requested amount (ties: larger amount).
- * 3. Nothing for the procedure: null, the handler answers TASK_STATE_REJECTED.
+ * 3. Only an unproven proof-only event for the procedure: that item at its regular price, no event (Mint 1cc 150,000).
+ * 4. Nothing for the procedure: null, the handler answers TASK_STATE_REJECTED.
+ * With `proofsRequired: false` (no ZK server) proof-only events count as plain ones in step 1, without zkClauses.
  */
 export function selectQuoteItem(input: SelectInput): QuoteSelection | null {
-  const allowEvents = input.allowEvents ?? true;
   const running = currentOffers(input.offers, input.procedureId, input.today);
+  const gated = input.proofsRequired !== false;
+  const proofOnly = gated ? running.filter(isProofOnly) : [];
+  const plain = gated ? running.filter((offer) => !isProofOnly(offer)) : running;
   const menu = input.menu.filter((item) => item.procedureId === input.procedureId);
 
-  if (allowEvents && running.length > 0) {
-    const offer = running.find((candidate) => candidate.id === input.preferOfferId) ?? closest(running, input.amount)!;
-    const facts = menuFor(offer, input.menu);
-    const includes = facts?.includes ?? [];
-    return {
-      source: "event",
-      product: facts?.product ?? offer.title,
-      amount: offer.amount,
-      priceKrw: offer.priceKrw,
-      vatIncluded: facts?.vatIncluded ?? true,
-      includes,
-      excludes: excludesOf(includes),
-      event: {
-        title: offer.title,
-        regularPriceKrw: offer.regularPriceKrw,
-        validFrom: offer.validFrom,
-        validUntil: offer.validUntil,
-        conditions: offer.conditions,
-      },
-      offerId: offer.id,
-      menuItemId: facts?.id,
-    };
-  }
+  const proven = input.verifiedOfferId ? proofOnly.find((offer) => offer.id === input.verifiedOfferId) : undefined;
+  if (proven) return { ...eventSelection(proven, input.menu), offerApplied: { offerId: proven.id, verified: true } };
+
+  const event = closest(plain, input.amount);
+  if (event) return eventSelection(event, input.menu, gated);
 
   const item = closest(menu, input.amount);
   if (item) {
@@ -116,12 +148,12 @@ export function selectQuoteItem(input: SelectInput): QuoteSelection | null {
     };
   }
 
-  // Event-only procedure whose discount was withheld: the regular price of that event's amount.
-  const offer = closest(running, input.amount);
+  // Proof-only event without a verified proof and no menu item: the regular price of that event's amount.
+  const offer = closest(proofOnly, input.amount);
   if (offer) {
     return {
       source: "event_regular_price",
-      product: offer.title,
+      product: eventProduct(offer, undefined),
       amount: offer.amount,
       priceKrw: offer.regularPriceKrw,
       vatIncluded: true,

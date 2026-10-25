@@ -135,6 +135,33 @@ describe("menu and offers edits reach the next clinic.quote", () => {
     expect((await quote()).priceKrw).toBe(340000);
   });
 
+  it("keeps proof conditions: saved from the event sheet, kept on an edit without the field, offered as zkClauses", async () => {
+    const event = {
+      procedureId: "rejuran_healer",
+      title: "첫 방문 리쥬란 2cc",
+      amount: { value: 2, unit: "cc" as const },
+      priceKrw: 290000,
+      regularPriceKrw: 340000,
+      validFrom: "2026-11-01",
+      validUntil: "2026-11-30",
+      conditions: "첫 방문 고객만",
+      zkClauses: [{ clinicId: SEOUL_GLOW, maxCount: 0 }],
+    };
+    const created = await saveOffer(SEOUL_GLOW, event);
+    const offer = created.offers.find((candidate) => candidate.title === event.title)!;
+    expect(offer.zkClauses).toEqual(event.zkClauses);
+
+    const { zkClauses: _dropped, ...withoutClauses } = offer;
+    const edited = await saveOffer(SEOUL_GLOW, { ...withoutClauses, priceKrw: 280000 });
+    expect(edited.offers.find((candidate) => candidate.id === offer.id)).toMatchObject({ priceKrw: 280000, zkClauses: event.zkClauses });
+
+    const offers = await clinicAgent.skills["clinic.offers"]!({ schema: "pibu/offers-query@1", month: "2026-11" }, ctx(SEOUL_GLOW));
+    const items = (offers.data as { items: { event?: { title: string; zkClauses?: unknown } }[] }).items;
+    expect(items.find((item) => item.event?.title === event.title)?.event?.zkClauses).toEqual(event.zkClauses);
+
+    await expect(saveOffer(SEOUL_GLOW, { ...offer, zkClauses: [{ clinicId: SEOUL_GLOW }] as never })).rejects.toThrow(/증명 조건/);
+  });
+
   it("refuses an event without the required promotion fields", async () => {
     const base = {
       procedureId: "rejuran_healer",

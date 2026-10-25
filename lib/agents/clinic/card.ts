@@ -1,10 +1,24 @@
 // Agent Card per clinic (03-a2a-protocol.md "병원 에이전트 카드"). Proxy and clinic operation keep the same
 // URL, skill ids and schemas; only provider, version and the clinic-operation params change on takeover.
 import type { ClinicProfile } from "../../domain/clinic";
+import { ZK_OFFER_PROOF_EXTENSION } from "../../zk";
 import type { ClinicOperation, StoredSlotPolicy } from "./store";
 
 export const CLINIC_OPERATION_EXT = "https://pibu.app/ext/clinic-operation/v1";
 export const REFERRAL_EXT = "https://pibu.app/ext/referral/v1";
+
+/** Base Sepolia and RecordRegistry v2 (docs/INTEGRATION.md 7절), the 03 card example values. */
+const DEFAULT_ZK_CHAIN_ID = 84532;
+const DEFAULT_ZK_REGISTRY = "0xcf47152e720508bf8c757a55aa30956ca8b58857";
+
+/** Chain and registry offer proofs are checked against. An empty variable (.env.example) counts as unset. */
+export function zkOfferProofParams(): { chainId: number; registry: string } {
+  const chainId = Number(process.env.ZK_CHAIN_ID);
+  return {
+    chainId: Number.isInteger(chainId) && chainId > 0 ? chainId : DEFAULT_ZK_CHAIN_ID,
+    registry: process.env.ZK_REGISTRY_ADDRESS || DEFAULT_ZK_REGISTRY,
+  };
+}
 
 const AREA_EN: Record<ClinicProfile["area"], string> = {
   gangnam: "Gangnam",
@@ -65,6 +79,13 @@ export function buildClinicCard(input: {
           description: "quote and book requests must carry a PibooK referral token in metadata.referralToken",
           // false: offers, availability and cancel are called without a token (03 확장 표).
           required: false,
+        },
+        {
+          uri: ZK_OFFER_PROOF_EXTENSION,
+          description: "Offer proofs travel in metadata.offerProof of clinic.quote; the clinic verifies them against the on-chain chart hash",
+          // false for the same reason as referral: a quote without a proof is still answered, at the regular price.
+          required: false,
+          params: zkOfferProofParams(),
         },
       ],
     },

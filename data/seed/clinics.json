@@ -319,7 +319,7 @@
     ],
     "offers": [
       {
-        "id": "offer_mint_1",
+        "id": "ofr_mint_rejuran_first_visit",
         "clinicId": "cln_mint",
         "procedureId": "rejuran_healer",
         "title": "First visit 1cc event",
@@ -331,7 +331,13 @@
         "regularPriceKrw": 150000,
         "validFrom": "2026-10-01",
         "validUntil": "2026-11-30",
-        "conditions": "First visit only"
+        "conditions": "First visit only",
+        "zkClauses": [
+          {
+            "clinicId": "cln_mint",
+            "maxCount": 0
+          }
+        ]
       }
     ],
     "slotPolicy": {
@@ -588,10 +594,6 @@
           "mode": "staff"
         },
         {
-          "locale": "ja",
-          "mode": "staff"
-        },
-        {
           "locale": "en",
           "mode": "interpreter"
         },
@@ -625,10 +627,6 @@
       "languages": [
         {
           "locale": "zh-CN",
-          "mode": "staff"
-        },
-        {
-          "locale": "ja",
           "mode": "staff"
         },
         {

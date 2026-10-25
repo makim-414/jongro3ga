@@ -20,6 +20,8 @@ describe("loadSeed", () => {
       "platform.price_records": 124,
       "platform.outcomes": 30,
       "platform.rules": 2,
+      "platform.verified_visits": 10,
+      "platform.review_stats": 5,
       "clinic.profiles": 5,
       "clinic.menu_items": 18,
       "clinic.offers": 1,
@@ -71,7 +73,7 @@ describe("clinics.json (06 seed table)", () => {
     expect(rejuran("cln_mint")).toEqual([]);
     expect(byId.cln_mint.offers).toEqual([
       {
-        id: "offer_mint_1",
+        id: "ofr_mint_rejuran_first_visit",
         clinicId: "cln_mint",
         procedureId: "rejuran_healer",
         title: "First visit 1cc event",
@@ -81,6 +83,7 @@ describe("clinics.json (06 seed table)", () => {
         validFrom: "2026-10-01",
         validUntil: "2026-11-30",
         conditions: "First visit only",
+        zkClauses: [{ clinicId: "cln_mint", maxCount: 0 }],
       },
     ]);
     expect(rejuran("cln_ara").map((m) => [m.amount.value, m.priceKrw, m.vatIncluded])).toEqual([[2, 300000, false]]);

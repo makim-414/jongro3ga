@@ -51,7 +51,7 @@ export interface StoredCandidate {
   referralToken: string;
   /** Clinic-confirmed visits of PibooK users (visit tickets). Display only, never part of the score. */
   verifiedVisits?: number;
-  /** Aggregate of verified reviews, present only when n >= 5. Review text is never shown. */
+  /** Aggregate of verified reviews, present only when n >= 3 (anonymity set, owner decision 2026-10-24: reviews are public). */
   reviewStats?: { n: number; avgRating: number };
 }
 

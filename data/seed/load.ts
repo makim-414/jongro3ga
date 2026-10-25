@@ -16,7 +16,9 @@ import type {
   RoutingRule,
   Slot,
   SlotPolicy,
+  ReviewStat,
   TreatmentRecord,
+  VerifiedVisitStat,
 } from "../../lib/domain";
 import type { Store } from "../../lib/store/types";
 import clinicsJson from "./clinics.json";
@@ -26,6 +28,7 @@ import outcomesJson from "./outcomes.json";
 import priceRecordsJson from "./price-records.json";
 import rulesJson from "./rules.json";
 import slotsJson from "./slots.json";
+import verifiedVisitsJson from "./verified-visits.json";
 
 /** Store collections per namespace. Agent modules use only their own namespace. */
 export const SEED_COLLECTIONS = {
@@ -40,6 +43,10 @@ export const SEED_COLLECTIONS = {
     attributions: "attributions",
     judgedQuotes: "judged_quotes",
     offerCache: "offer_cache",
+    /** ZK extension: verified visit counts, review aggregates with their texts, record anchor log. */
+    verifiedVisits: "verified_visits",
+    reviewStats: "review_stats",
+    anchorLogs: "anchor_logs",
   },
   clinic: {
     profiles: "profiles",
@@ -93,6 +100,12 @@ const seedPriceRecords = priceRecordsJson as unknown as PriceRecord[];
 const seedRules = rulesJson as unknown as RoutingRule[];
 const araBurst = araBurstJson as unknown as AraBurstTemplate[];
 
+/** ReviewStat with the anonymous review texts it aggregates (owner decision 2026-10-24: reviews are public). */
+export type SeedReview = { rating: number; text: string; locale: string };
+export type SeedReviewStat = ReviewStat & { reviews: SeedReview[] };
+const seedVerifiedVisits = verifiedVisitsJson.verifiedVisits as VerifiedVisitStat[];
+const seedReviewStats = verifiedVisitsJson.reviewStats as SeedReviewStat[];
+
 const SEED_MARKER_ID = "seed";
 export const SEED_VERSION = "2026-10-24.a2a.1";
 
@@ -137,6 +150,8 @@ export async function loadSeed(store: Store): Promise<{ loaded: Record<string, n
   loaded[`platform.${P.priceRecords}`] = await putAll(store, "platform", P.priceRecords, seedPriceRecords);
   loaded[`platform.${P.outcomes}`] = await putAll(store, "platform", P.outcomes, seedOutcomes);
   loaded[`platform.${P.rules}`] = await putAll(store, "platform", P.rules, seedRules);
+  loaded[`platform.${P.verifiedVisits}`] = await putAll(store, "platform", P.verifiedVisits, seedVerifiedVisits);
+  loaded[`platform.${P.reviewStats}`] = await putAll(store, "platform", P.reviewStats, seedReviewStats);
 
   loaded[`clinic.${C.profiles}`] = await putAll(store, "clinic", C.profiles, seedClinics.map((c) => c.profile));
   loaded[`clinic.${C.menuItems}`] = await putAll(store, "clinic", C.menuItems, seedClinics.flatMap((c) => c.menu));

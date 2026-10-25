@@ -1,0 +1,122 @@
+{
+  "verifiedVisits": [
+    { "id": "vv_seoul_glow_rejuran_healer", "clinicId": "cln_seoul_glow", "procedureId": "rejuran_healer", "count": 1240 },
+    { "id": "vv_seoul_glow_botox_forehead", "clinicId": "cln_seoul_glow", "procedureId": "botox_forehead", "count": 310 },
+    { "id": "vv_mint_rejuran_healer", "clinicId": "cln_mint", "procedureId": "rejuran_healer", "count": 980 },
+    { "id": "vv_mint_shrink_universe", "clinicId": "cln_mint", "procedureId": "shrink_universe", "count": 220 },
+    { "id": "vv_ara_rejuran_healer", "clinicId": "cln_ara", "procedureId": "rejuran_healer", "count": 640 },
+    { "id": "vv_hanbit_rejuran_healer", "clinicId": "cln_hanbit", "procedureId": "rejuran_healer", "count": 410 },
+    { "id": "vv_hanbit_thermage_flx", "clinicId": "cln_hanbit", "procedureId": "thermage_flx", "count": 95 },
+    { "id": "vv_dahye_botox_forehead", "clinicId": "cln_dahye", "procedureId": "botox_forehead", "count": 300 },
+    { "id": "vv_dahye_ulthera", "clinicId": "cln_dahye", "procedureId": "ulthera", "count": 160 },
+    { "id": "vv_dahye_shrink_universe", "clinicId": "cln_dahye", "procedureId": "shrink_universe", "count": 140 }
+  ],
+  "reviewStats": [
+    {
+      "id": "rs_seoul_glow_rejuran_healer",
+      "clinicId": "cln_seoul_glow",
+      "procedureId": "rejuran_healer",
+      "n": 18,
+      "avgRating": 4.6,
+      "nullifiers": [
+        "nf_seed_seoul_glow_rejuran_01", "nf_seed_seoul_glow_rejuran_02", "nf_seed_seoul_glow_rejuran_03",
+        "nf_seed_seoul_glow_rejuran_04", "nf_seed_seoul_glow_rejuran_05", "nf_seed_seoul_glow_rejuran_06",
+        "nf_seed_seoul_glow_rejuran_07", "nf_seed_seoul_glow_rejuran_08", "nf_seed_seoul_glow_rejuran_09",
+        "nf_seed_seoul_glow_rejuran_10", "nf_seed_seoul_glow_rejuran_11", "nf_seed_seoul_glow_rejuran_12",
+        "nf_seed_seoul_glow_rejuran_13", "nf_seed_seoul_glow_rejuran_14", "nf_seed_seoul_glow_rejuran_15",
+        "nf_seed_seoul_glow_rejuran_16", "nf_seed_seoul_glow_rejuran_17", "nf_seed_seoul_glow_rejuran_18"
+      ],
+      "reviews": [
+        { "rating": 5, "text": "日本語のコーディネーターが最初から最後まで一緒でした。2ccで見積もり通り。", "locale": "ja" },
+        { "rating": 4, "text": "붓기 하루. 2회차도 여기서 할 예정.", "locale": "ko" },
+        { "rating": 5, "text": "予約から施術まで日本語で完結しました。", "locale": "ja" },
+        { "rating": 5, "text": "麻酔クリームの時間をしっかり取ってくれました。", "locale": "ja" },
+        { "rating": 4, "text": "翌日は少し赤みが残りましたが、帰国日には落ち着きました。", "locale": "ja" },
+        { "rating": 5, "text": "料金は事前の案内と同じでした。", "locale": "ja" },
+        { "rating": 4, "text": "待ち時間が20分ほどありました。施術は丁寧でした。", "locale": "ja" },
+        { "rating": 5, "text": "アフターケアの説明書が日本語で用意されていました。", "locale": "ja" },
+        { "rating": 5, "text": "The coordinator explained the aftercare clearly. Price matched the quote.", "locale": "en" },
+        { "rating": 4, "text": "針の痛みはありましたが、我慢できる程度でした。", "locale": "ja" },
+        { "rating": 5, "text": "2週間ほどで肌のハリを感じました。", "locale": "ja" },
+        { "rating": 5, "text": "跟报价一样，没有额外费用。", "locale": "zh-CN" },
+        { "rating": 4, "text": "가격은 안내받은 그대로였고 상담이 길지 않아 좋았어요.", "locale": "ko" },
+        { "rating": 5, "text": "旅行中でもスケジュールを合わせてもらえました。", "locale": "ja" },
+        { "rating": 4, "text": "施術後のメイクは翌日からと言われました。", "locale": "ja" },
+        { "rating": 5, "text": "2回目の時期もメッセージで案内がありました。", "locale": "ja" },
+        { "rating": 5, "text": "院内が清潔で落ち着いていました。", "locale": "ja" },
+        { "rating": 4, "text": "ぽつぽつ跡は2日で消えました。", "locale": "ja" }
+      ]
+    },
+    {
+      "id": "rs_mint_rejuran_healer",
+      "clinicId": "cln_mint",
+      "procedureId": "rejuran_healer",
+      "n": 6,
+      "avgRating": 3.5,
+      "nullifiers": [
+        "nf_seed_mint_rejuran_01", "nf_seed_mint_rejuran_02", "nf_seed_mint_rejuran_03",
+        "nf_seed_mint_rejuran_04", "nf_seed_mint_rejuran_05", "nf_seed_mint_rejuran_06"
+      ],
+      "reviews": [
+        { "rating": 3, "text": "1cc는 역시 적었어요. 다음엔 2cc로.", "locale": "ko" },
+        { "rating": 4, "text": "通訳の方がいて安心できました。", "locale": "ja" },
+        { "rating": 3, "text": "イベント価格は1ccだけでした。量は少なめです。", "locale": "ja" },
+        { "rating": 4, "text": "駅から近くて通いやすいです。", "locale": "ja" },
+        { "rating": 3, "text": "The event price was for 1cc only, which I did not notice at first.", "locale": "en" },
+        { "rating": 4, "text": "施術自体は短時間で終わりました。", "locale": "ja" }
+      ]
+    },
+    {
+      "id": "rs_ara_rejuran_healer",
+      "clinicId": "cln_ara",
+      "procedureId": "rejuran_healer",
+      "n": 5,
+      "avgRating": 3,
+      "nullifiers": [
+        "nf_seed_ara_rejuran_01", "nf_seed_ara_rejuran_02", "nf_seed_ara_rejuran_03",
+        "nf_seed_ara_rejuran_04", "nf_seed_ara_rejuran_05"
+      ],
+      "reviews": [
+        { "rating": 3, "text": "見積もりより支払いが多かった。説明は丁寧。", "locale": "ja" },
+        { "rating": 3, "text": "当日に追加の麻酔代がかかりました。", "locale": "ja" },
+        { "rating": 4, "text": "通訳の方の説明はわかりやすかったです。", "locale": "ja" },
+        { "rating": 2, "text": "最終金額を施術前に確認すればよかったです。", "locale": "ja" },
+        { "rating": 3, "text": "仕上がりは満足ですが、料金の案内がもう少し早いと助かります。", "locale": "ja" }
+      ]
+    },
+    {
+      "id": "rs_hanbit_rejuran_healer",
+      "clinicId": "cln_hanbit",
+      "procedureId": "rejuran_healer",
+      "n": 5,
+      "avgRating": 4.2,
+      "nullifiers": [
+        "nf_seed_hanbit_rejuran_01", "nf_seed_hanbit_rejuran_02", "nf_seed_hanbit_rejuran_03",
+        "nf_seed_hanbit_rejuran_04", "nf_seed_hanbit_rejuran_05"
+      ],
+      "reviews": [
+        { "rating": 4, "text": "中文沟通没问题，第二次也打算来。", "locale": "zh-CN" },
+        { "rating": 5, "text": "医生讲解很仔细，价格和预约时一样。", "locale": "zh-CN" },
+        { "rating": 4, "text": "离明洞酒店很近，购物前做完。", "locale": "zh-CN" },
+        { "rating": 4, "text": "第二天有一点红，第三天就好了。", "locale": "zh-CN" },
+        { "rating": 4, "text": "护士帮忙安排了下次的时间。", "locale": "zh-CN" }
+      ]
+    },
+    {
+      "id": "rs_dahye_botox_forehead",
+      "clinicId": "cln_dahye",
+      "procedureId": "botox_forehead",
+      "n": 4,
+      "avgRating": 4.5,
+      "nullifiers": [
+        "nf_seed_dahye_botox_01", "nf_seed_dahye_botox_02", "nf_seed_dahye_botox_03", "nf_seed_dahye_botox_04"
+      ],
+      "reviews": [
+        { "rating": 5, "text": "The doctor explained everything in English. Natural result.", "locale": "en" },
+        { "rating": 5, "text": "Quick visit, no bruising.", "locale": "en" },
+        { "rating": 4, "text": "Took about a week to settle in, as they said it would.", "locale": "en" },
+        { "rating": 4, "text": "Staff spoke English at the front desk too.", "locale": "en" }
+      ]
+    }
+  ]
+}

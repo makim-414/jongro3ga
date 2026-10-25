@@ -3,10 +3,11 @@ import clinicsSeed from "../../../data/seed/clinics.json";
 import outcomesSeed from "../../../data/seed/outcomes.json";
 import recordsSeed from "../../../data/seed/price-records.json";
 import rulesSeed from "../../../data/seed/rules.json";
+import verifiedVisitsSeed from "../../../data/seed/verified-visits.json";
 import type { OffersV1, ProcedureRequestV1 } from "../../a2a/schemas";
-import type { ClinicRegistryEntry, Outcome, PriceRecord, RoutingRule } from "../../domain";
+import type { ClinicRegistryEntry, Outcome, PriceRecord, RoutingRule, VerifiedVisitStat } from "../../domain";
 import { checkEligibility } from "./eligibility";
-import { hardFilter, matchClinics, nearestItem, scoreClinic, type MatchClinicInput } from "./matching";
+import { displayStats, hardFilter, MAX_CANDIDATES, matchClinics, nearestItem, scoreClinic, type MatchClinicInput } from "./matching";
 import { applicableRules, ruleMatches } from "./rules";
 
 const records = recordsSeed as unknown as PriceRecord[];
@@ -77,9 +78,10 @@ describe("Yuki's rejuran request (seed)", () => {
     const result = run(yuki);
     expect(result.candidates.map((c) => c.clinicId)).toEqual(["cln_seoul_glow", "cln_mint", "cln_ara"]);
     expect(result.appliedRuleIds).toEqual([]);
+    // Region is location information: Hanbit (Chinese) and Dahye (Japanese by app translation only) drop on language.
     expect(result.filtered).toEqual([
       { clinicId: "cln_dahye", reason: "language" },
-      { clinicId: "cln_hanbit", reason: "area" },
+      { clinicId: "cln_hanbit", reason: "language" },
     ]);
     expect(result.priceReference).toMatchObject({ region: "gangnam_sinsa", p25UnitKrw: 140000, p50UnitKrw: 160000, p75UnitKrw: 185000, sampleSize: 42, windowDays: 120, unit: "cc" });
     for (const c of result.candidates) {
@@ -89,6 +91,11 @@ describe("Yuki's rejuran request (seed)", () => {
     }
     expect(result.candidates[0].reasons).toContain("Japanese-speaking staff on site");
     expect(result.candidates[1].reasons).toContain("Japanese interpreter available");
+    expect(result.candidates.map((c) => c.reasons.at(-1))).toEqual([
+      "Near where you stay (Sinsa)",
+      "Near where you stay (Gangnam)",
+      "Near where you stay (Apgujeong)",
+    ]);
   });
 
   it("is deterministic: same input, same output", () => {
@@ -106,14 +113,13 @@ describe("Yuki's rejuran request (seed)", () => {
 describe("hard filters", () => {
   const glow = () => seedInputs().find((c) => c.registry.id === "cln_seoul_glow")!;
 
-  it("drops unverified, unregistered, procedure-less, language-less and out-of-area clinics", () => {
+  it("drops unverified, unregistered, procedure-less and language-less clinics", () => {
     expect(hardFilter(yuki, glow())).toEqual({ ok: true });
     expect(hardFilter(yuki, { ...glow(), registry: { ...glow().registry, verificationStatus: "suspended" } })).toEqual({ ok: false, reason: "not_verified" });
     expect(hardFilter(yuki, { ...glow(), registry: { ...glow().registry, foreignPatientFacilityRegistered: false } })).toEqual({ ok: false, reason: "not_verified" });
     expect(hardFilter({ ...yuki, procedureId: "ulthera" }, glow())).toEqual({ ok: false, reason: "procedure_not_offered" });
     expect(hardFilter(yuki, { ...glow(), offers: undefined })).toEqual({ ok: false, reason: "procedure_not_offered" });
     expect(hardFilter({ ...yuki, languages: ["zh-CN"] }, glow())).toEqual({ ok: false, reason: "language" });
-    expect(hardFilter({ ...yuki, areas: ["hongdae"] }, glow())).toEqual({ ok: false, reason: "area" });
   });
 
   it("app_translation alone fails the language filter unless the request is Korean", () => {
@@ -122,8 +128,41 @@ describe("hard filters", () => {
     expect(hardFilter({ ...yuki, areas: [], languages: ["ko"] }, dahye)).toEqual({ ok: true });
   });
 
-  it("same area group passes the area filter", () => {
-    expect(hardFilter({ ...yuki, areas: ["gangnam"] }, glow())).toEqual({ ok: true });
+  it("never excludes on area: requested areas are location information, not a condition", () => {
+    expect(hardFilter({ ...yuki, areas: ["hongdae"] }, glow())).toEqual({ ok: true });
+    expect(hardFilter({ ...yuki, areas: ["myeongdong"] }, glow())).toEqual({ ok: true });
+    const hongdae = run({ ...yuki, areas: ["hongdae"] }, seedInputs(), []);
+    expect(hongdae.candidates.map((c) => c.clinicId)).toEqual(["cln_seoul_glow", "cln_mint", "cln_ara"]);
+    expect(hongdae.filtered.map((f) => f.reason)).toEqual(["language", "language"]);
+    for (const c of hongdae.candidates) expect(c.reasons.join(" ")).not.toMatch(/Near where you stay/);
+  });
+});
+
+describe("scores", () => {
+  const clinic = (id: string) => seedInputs().find((c) => c.registry.id === id)!;
+  const sample = { n: 42, p25: 140000, p75: 185000, typicalAmount: { min: 2, max: 3, unit: "cc" as const } };
+
+  it("fit is the language score only: staff 1.0, interpreter 0.6, whatever the requested areas", () => {
+    expect(scoreClinic(yuki, clinic("cln_seoul_glow"), sample).factors.fit).toBe(1);
+    expect(scoreClinic(yuki, clinic("cln_mint"), sample).factors.fit).toBe(0.6);
+    expect(scoreClinic(yuki, clinic("cln_ara"), sample).factors.fit).toBe(0.6);
+    for (const id of ["cln_seoul_glow", "cln_mint", "cln_ara"]) {
+      const near = scoreClinic(yuki, clinic(id), sample);
+      for (const areas of [[], ["hongdae"], ["myeongdong", "other"]] as ProcedureRequestV1["areas"][]) {
+        const far = scoreClinic({ ...yuki, areas }, clinic(id), sample);
+        expect(far.score).toBe(near.score);
+        expect(far.factors).toEqual(near.factors);
+        expect(far.nearStayArea).toBeUndefined();
+      }
+    }
+  });
+
+  it("keeps at most three candidates", () => {
+    expect(MAX_CANDIDATES).toBe(3);
+    const korean = run({ ...yuki, languages: ["ko"] }, seedInputs(), []);
+    expect(korean.filtered).toEqual([]);
+    expect(korean.candidatesBeforeRules).toHaveLength(5);
+    expect(korean.candidates.map((c) => c.clinicId)).toEqual(["cln_seoul_glow", "cln_mint", "cln_ara"]);
   });
 });
 
@@ -161,10 +200,27 @@ describe("ordering, rules, budget", () => {
   });
 
   it("require_language narrows to clinics with staff or interpreter for that language", () => {
-    const result = run({ ...yuki, languages: ["ja", "en"] }, seedInputs(), [rule("rule_x", { kind: "require_language", languages: ["en"] })]);
-    expect(result.candidates.map((c) => c.clinicId).sort()).toEqual(["cln_ara", "cln_mint", "cln_seoul_glow"]);
+    const ja = run({ ...yuki, languages: ["ja", "zh-CN"] }, seedInputs(), [rule("rule_x", { kind: "require_language", languages: ["ja"] })]);
+    expect(ja.candidatesBeforeRules.map((c) => c.clinicId)).toContain("cln_hanbit");
+    expect(ja.candidates.map((c) => c.clinicId)).toEqual(["cln_seoul_glow", "cln_mint", "cln_ara"]);
+    // Hanbit (staff) and Dahye (interpreter) serve Chinese; Ara's app translation does not count. Neither is in
+    // Yuki's areas, and that no longer matters.
     const zh = run({ ...yuki, languages: ["ja", "zh-CN"] }, seedInputs(), [rule("rule_y", { kind: "require_language", languages: ["zh-CN"] })]);
-    expect(zh.candidates).toEqual([]);
+    expect(zh.candidates.map((c) => c.clinicId).sort()).toEqual(["cln_dahye", "cln_hanbit"]);
+  });
+
+  it("prefer_area lifts clinics in the area as a rule effect, never as an exclusion", () => {
+    const base = run(yuki, seedInputs(), []);
+    const result = run(yuki, seedInputs(), [rule("rule_area", { kind: "prefer_area", areas: ["apgujeong"], delta: 0.3 })]);
+    expect(result.appliedRuleIds).toEqual(["rule_area"]);
+    expect(result.candidates.map((c) => c.clinicId)).toEqual(["cln_ara", "cln_seoul_glow", "cln_mint"]);
+    const score = (r: typeof base, id: string) => r.candidates.find((c) => c.clinicId === id)!.score;
+    expect(score(result, "cln_ara")).toBeCloseTo(score(base, "cln_ara") + 0.3, 2);
+    expect(score(result, "cln_mint")).toBe(score(base, "cln_mint"));
+    expect(result.candidates[0].reasons).toContain("In an area visitors like you preferred");
+    // A preferred area nobody is in changes no score and removes no clinic.
+    const elsewhere = run(yuki, seedInputs(), [rule("rule_far", { kind: "prefer_area", areas: ["hongdae"], delta: 0.3 })]);
+    expect(elsewhere.candidates.map((c) => [c.clinicId, c.score])).toEqual(base.candidates.map((c) => [c.clinicId, c.score]));
   });
 
   it("an excluded or demoted clinic stays clamped to 0..1, boosts clamp at 1", () => {
@@ -197,6 +253,31 @@ describe("ordering, rules, budget", () => {
     const item = (value: number) => ({ procedureId: "rejuran_healer", product: "x", amount: { value, unit: "cc" as const }, priceKrw: 1, vatIncluded: true });
     expect(nearestItem([item(1), item(3)], 2)?.amount.value).toBe(3);
     expect(nearestItem([item(1), item(2), item(4)], 2)?.amount.value).toBe(2);
+  });
+});
+
+describe("display stats (verifiedVisits, reviewStats)", () => {
+  const visits = verifiedVisitsSeed.verifiedVisits as VerifiedVisitStat[];
+  const reviews = verifiedVisitsSeed.reviewStats;
+  const review = (clinicId: string, n: number, avgRating = 4.2) => ({ clinicId, procedureId: "rejuran_healer", n, avgRating });
+
+  it("counts verified visits for the same clinic and procedure, and passes reviewStats at n >= 3", () => {
+    expect(displayStats("cln_seoul_glow", "rejuran_healer", visits, reviews)).toEqual({ verifiedVisits: 1240, reviewStats: { n: 18, avgRating: 4.6 } });
+    expect(displayStats("cln_mint", "rejuran_healer", visits, reviews)).toEqual({ verifiedVisits: 980, reviewStats: { n: 6, avgRating: 3.5 } });
+    expect(displayStats("cln_ara", "rejuran_healer", visits, reviews)).toEqual({ verifiedVisits: 640, reviewStats: { n: 5, avgRating: 3 } });
+    expect(displayStats("cln_seoul_glow", "botox_forehead", visits, reviews)).toEqual({ verifiedVisits: 310 });
+    expect(displayStats("cln_ara", "botox_forehead", visits, reviews)).toEqual({});
+  });
+
+  it("omits reviewStats below the anonymity set of 3", () => {
+    expect(displayStats("cln_x", "rejuran_healer", [], [review("cln_x", 2)])).toEqual({});
+    expect(displayStats("cln_x", "rejuran_healer", [], [review("cln_x", 3)])).toEqual({ reviewStats: { n: 3, avgRating: 4.2 } });
+    expect(displayStats("cln_x", "rejuran_healer", [], [review("cln_y", 9)])).toEqual({});
+  });
+
+  it("are not a matching input, so they cannot move a score", () => {
+    // matchClinics takes no visit or review data at all (07: display context only).
+    expect(Object.keys(run(yuki).candidates[0]).sort()).toEqual(["clinicId", "reasons", "score"]);
   });
 });
 

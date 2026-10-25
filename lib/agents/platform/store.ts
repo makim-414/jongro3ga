@@ -1,6 +1,7 @@
 // Platform namespace adapter. The platform module reads and writes only "platform" (06 소유 경계).
-import { SEED_COLLECTIONS } from "../../../data/seed/load";
+import { SEED_COLLECTIONS, type SeedReviewStat } from "../../../data/seed/load";
 import type {
+  AnchorLog,
   AttributionEntry,
   ClinicOfferCache,
   ClinicRegistryEntry,
@@ -10,6 +11,7 @@ import type {
   PriceRecord,
   RoutingRule,
   Signal,
+  VerifiedVisitStat,
 } from "../../domain";
 import { getStore } from "../../store";
 
@@ -41,4 +43,16 @@ export const platformStore = {
   putJudgedQuote: (j: JudgedQuote) => put(COLLECTIONS.judgedQuotes, j),
   offerCache: () => list<ClinicOfferCache>(COLLECTIONS.offerCache),
   putOfferCache: (c: ClinicOfferCache) => put(COLLECTIONS.offerCache, c),
+  verifiedVisits: () => list<VerifiedVisitStat>(COLLECTIONS.verifiedVisits),
+  putVerifiedVisits: (v: VerifiedVisitStat) => put(COLLECTIONS.verifiedVisits, v),
+  reviewStats: () => list<StoredReviewStat>(COLLECTIONS.reviewStats),
+  putReviewStats: (r: StoredReviewStat) => put(COLLECTIONS.reviewStats, r),
+  anchorLogs: () => list<AnchorLog>(COLLECTIONS.anchorLogs),
+  putAnchorLog: (a: AnchorLog) => put(COLLECTIONS.anchorLogs, a),
 };
+
+/** ReviewStat plus the anonymous review texts it aggregates. */
+export type StoredReviewStat = SeedReviewStat;
+
+/** "cln_seoul_glow" + "rejuran_healer" -> "seoul_glow_rejuran_healer", the id stem the seed uses for ZK stats. */
+export const statKey = (clinicId: string, procedureId: string): string => `${clinicId.replace(/^cln_/, "")}_${procedureId}`;

@@ -11,22 +11,18 @@ vi.mock("../../a2a/client", async (importActual) => {
   const actual = await importActual<typeof import("../../a2a/client")>();
   return { ...actual, sendMessage: vi.fn(), getTask: vi.fn() };
 });
-vi.mock("../../zk", () => ({
-  zkEnabled: () => Boolean(process.env.ZK_SERVER_URL),
-  verifyOffer: vi.fn(),
-  matchOffers: vi.fn(),
-  proveOffer: vi.fn(),
-}));
+// The real verifier needs the owner's wallet and the GlowPass server: mock the HTTP wrapper only.
+vi.mock("../../zk/client", () => ({ verifyOffer: vi.fn() }));
 
 import { verifyReferralToken, type ReferralClaims } from "../../a2a/auth";
 import { taskCompleter } from "../../a2a/tasks";
 import { sendMessage } from "../../a2a/client";
-import { verifyOffer } from "../../zk";
+import { verifyOffer } from "../../zk/client";
 import { clinicAgent } from "./definition";
 import { confirmBooking, proposeBookingTime, rejectBooking } from "./booking";
 import { closest, selectQuoteItem } from "./quote";
 import { writeClinicSeed } from "./seed";
-import { clinicStore } from "./store";
+import { CLINIC_COLLECTIONS, clinicStore } from "./store";
 
 const ENV = { ...process.env };
 const CUSTOMER = "cag_7f3k2";
@@ -403,36 +399,142 @@ describe("clinic.offers and clinic.availability", () => {
   });
 });
 
-describe("ZK offer proof hook (docs/INTEGRATION.md)", () => {
-  const bundle = { subjectId: "0xabc", offerId: "of_mint_rejuran_first", today: 1, proofs: [{ proof: "0x1", publicInputs: [] }] };
-
-  it("with ZK off, a proof changes nothing and verifyOffer is never called", async () => {
-    const quote = QuoteV1Schema.parse((await quoteAt("mint", 2, { zkOfferProof: bundle })).data);
-    expect(quote.priceKrw).toBe(99000);
-    expect(verifyOffer).not.toHaveBeenCalled();
+describe("ZK offer proof in clinic.quote (03 zk-offer-proof/v1, docs/INTEGRATION.md 3절)", () => {
+  const MINT_OFFER = "ofr_mint_rejuran_first_visit";
+  const SUBJECT = "0x5c0d6f0a8c2e4b1f9d3a7e6c5b4a39281716050403020100ffeeddccbbaa9988";
+  const bundle = (offerId = MINT_OFFER, extra: Record<string, unknown> = {}) => ({
+    subjectId: SUBJECT,
+    offerId,
+    today: 29880272,
+    proofs: [{ proof: "0x1f2e3d4c", publicInputs: ["0x0b1c2d3e", "29880272", "0", "2", "0", "100000", "0", "0"] }],
+    ...extra,
+  });
+  const offerProof = (offerId = MINT_OFFER, clinicId = "cln_mint", extra: Record<string, unknown> = {}) => ({
+    schema: "pibu/offer-proof@1",
+    clinicId,
+    chainId: 84532,
+    registry: "0xcf47152e720508bf8c757a55aa30956ca8b58857",
+    ...bundle(offerId, extra),
   });
 
-  it("with ZK on, applies the event only when the proof verifies", async () => {
+  /** Mint's first visit event as a proof-only event (docs/spec/03 quote example), replacing the plain fixture event. */
+  async function useProofOnlyMintEvent(): Promise<void> {
+    const db = clinicStore();
+    const plain = (await db.offer("of_mint_rejuran_first"))!;
+    await db.removeOffer(plain.id);
+    await db.putOffer({ ...plain, id: MINT_OFFER, zkClauses: [{ clinicId: "cln_mint", maxCount: 0 }] });
+  }
+
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(async () => {
     process.env.ZK_SERVER_URL = "http://localhost:4007";
-    vi.mocked(verifyOffer).mockResolvedValueOnce({ ok: true });
-    const ok = QuoteV1Schema.parse((await quoteAt("mint", 2, { zkOfferProof: { schema: "pibu/offer-proof@1", bundle } })).data);
-    expect(verifyOffer).toHaveBeenCalledWith("cln_mint", bundle);
-    expect([ok.priceKrw, ok.event?.regularPriceKrw]).toEqual([99000, 150000]);
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await useProofOnlyMintEvent();
+  });
+  afterEach(() => warn.mockRestore());
 
-    vi.mocked(verifyOffer).mockResolvedValueOnce({ ok: false, reason: "constraint" });
-    const failedProof = QuoteV1Schema.parse((await quoteAt("mint", 2, { zkOfferProof: bundle })).data);
-    expect([failedProof.priceKrw, failedProof.event]).toEqual([150000, undefined]);
-
-    vi.mocked(verifyOffer).mockResolvedValueOnce(null);
-    const unconfigured = QuoteV1Schema.parse((await quoteAt("mint", 2, { zkOfferProof: bundle })).data);
-    expect(unconfigured.priceKrw).toBe(150000);
+  it.each([
+    ["metadata.offerProof (pibu/offer-proof@1)", { offerProof: offerProof() }],
+    ["metadata.zkOfferProof (bundle from the customer agent)", { zkOfferProof: bundle() }],
+  ])("applies the 1cc event at 99,000 with offerApplied for a verified proof in %s", async (_label, metadata) => {
+    vi.mocked(verifyOffer).mockResolvedValue({ ok: true, reason: "verified" });
+    const result = await quoteAt("mint", 2, metadata);
+    expect(result.state).toBe("TASK_STATE_COMPLETED");
+    const quote = QuoteV1Schema.parse(result.data);
+    expect(quote).toMatchObject({ clinicId: "cln_mint", amount: { value: 1, unit: "cc" }, priceKrw: 99000, vatIncluded: true, indicative: true });
+    expect(quote.offerApplied).toEqual({ offerId: MINT_OFFER, verified: true });
+    expect(quote.event).toEqual({
+      title: "First visit 1cc event",
+      regularPriceKrw: 150000,
+      validFrom: "2026-11-01",
+      validUntil: "2026-11-30",
+      conditions: "First visit only",
+      zkClauses: [{ clinicId: "cln_mint", maxCount: 0 }],
+    });
+    expect(verifyOffer).toHaveBeenCalledWith("cln_mint", bundle());
+    expect((await clinicStore().quote(quote.quoteId))?.offerId).toBe(MINT_OFFER);
+    const [task] = await clinicStore().tasks("cln_mint");
+    expect(task?.summary).toBe("이벤트 견적 · 오퍼 증명 확인");
   });
 
-  it("with ZK on but no proof attached, quotes as before", async () => {
-    process.env.ZK_SERVER_URL = "http://localhost:4007";
+  it("quotes the list price without a proof, and never asks the verifier", async () => {
     const quote = QuoteV1Schema.parse((await quoteAt("mint")).data);
-    expect(quote.priceKrw).toBe(99000);
+    expect([quote.amount.value, quote.priceKrw, quote.event, quote.offerApplied]).toEqual([1, 150000, undefined, undefined]);
     expect(verifyOffer).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the verifier refuses", () => vi.mocked(verifyOffer).mockResolvedValue({ ok: false, reason: "증명 검증 실패" }), "rejected"],
+    ["the verifier is unreachable", () => vi.mocked(verifyOffer).mockRejectedValue(new Error("fetch failed: ECONNREFUSED")), "verifier_unreachable"],
+  ])("quotes the list price, not a rejection, when %s", async (_label, arrange, reason) => {
+    arrange();
+    const result = await quoteAt("mint", 2, { offerProof: offerProof() });
+    expect(result.state).toBe("TASK_STATE_COMPLETED");
+    const quote = QuoteV1Schema.parse(result.data);
+    expect([quote.priceKrw, quote.event, quote.offerApplied]).toEqual([150000, undefined, undefined]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`cln_mint offer proof not applied: ${reason}`), expect.anything());
+    const [task] = await clinicStore().tasks("cln_mint");
+    expect(task?.summary).toBe(`메뉴 견적 · 오퍼 증명 미적용 (${reason})`);
+  });
+
+  it("applies the event like a plain one when no ZK server is configured, with or without a proof (BUILD-LOG P12)", async () => {
+    delete process.env.ZK_SERVER_URL;
+    for (const metadata of [{}, { offerProof: offerProof() }]) {
+      const quote = QuoteV1Schema.parse((await quoteAt("mint", 2, metadata)).data);
+      expect([quote.amount.value, quote.priceKrw, quote.event?.regularPriceKrw, quote.event?.zkClauses, quote.offerApplied]).toEqual([
+        1, 99000, 150000, undefined, undefined,
+      ]);
+    }
+    expect(verifyOffer).not.toHaveBeenCalled();
+  });
+
+  it("gives up on a verifier that does not answer in time", async () => {
+    process.env.ZK_TIMEOUT_MS = "20";
+    vi.mocked(verifyOffer).mockReturnValue(new Promise(() => {}));
+    const quote = QuoteV1Schema.parse((await quoteAt("mint", 2, { zkOfferProof: bundle() })).data);
+    expect([quote.priceKrw, quote.offerApplied]).toEqual([150000, undefined]);
+  });
+
+  it("does not send another clinic's proof to the verifier", async () => {
+    const otherClinic = QuoteV1Schema.parse((await quoteAt("mint", 2, { offerProof: offerProof("ofr_seoul_glow_rejuran_second", "cln_seoul_glow") })).data);
+    const otherOffer = QuoteV1Schema.parse((await quoteAt("mint", 2, { zkOfferProof: bundle("ofr_hanbit_first_visit") })).data);
+    expect([otherClinic.priceKrw, otherOffer.priceKrw]).toEqual([150000, 150000]);
+    expect(verifyOffer).not.toHaveBeenCalled();
+  });
+
+  it("lets an unanchored pseudonym through a first visit event only", async () => {
+    vi.mocked(verifyOffer).mockResolvedValue({ ok: true, reason: "빈 차트로 간주", unanchored: true });
+    const first = QuoteV1Schema.parse((await quoteAt("mint", 2, { offerProof: offerProof(MINT_OFFER, "cln_mint", { unanchored: true }) })).data);
+    expect([first.priceKrw, first.offerApplied?.offerId]).toEqual([99000, MINT_OFFER]);
+
+    const db = clinicStore();
+    const second = { ...(await db.offer(MINT_OFFER))!, id: "ofr_mint_rejuran_second", zkClauses: [{ type: "rejuran_healer", minCount: 1, maxCount: 1 }] };
+    await db.removeOffer(MINT_OFFER);
+    await db.putOffer(second);
+    const refused = QuoteV1Schema.parse((await quoteAt("mint", 2, { zkOfferProof: bundle(second.id) })).data);
+    expect([refused.priceKrw, refused.offerApplied]).toEqual([150000, undefined]);
+  });
+
+  it("without a menu item, quotes the proof-only event's amount at its regular price (data/seed Mint)", async () => {
+    await clinicStore().store.remove("clinic", CLINIC_COLLECTIONS.menu, "mi_mint_rejuran_1cc");
+    const listPrice = QuoteV1Schema.parse((await quoteAt("mint")).data);
+    expect(listPrice).toMatchObject({ product: "Rejuran", amount: { value: 1, unit: "cc" }, priceKrw: 150000, vatIncluded: true });
+    expect([listPrice.event, listPrice.offerApplied]).toEqual([undefined, undefined]);
+
+    vi.mocked(verifyOffer).mockResolvedValue({ ok: true, reason: "verified" });
+    const proven = QuoteV1Schema.parse((await quoteAt("mint", 2, { zkOfferProof: bundle() })).data);
+    expect(proven).toMatchObject({ product: "Rejuran", priceKrw: 99000, offerApplied: { offerId: MINT_OFFER, verified: true } });
+  });
+
+  it("keeps plain events for everyone: a failed proof does not switch them off", async () => {
+    vi.mocked(verifyOffer).mockResolvedValue({ ok: false, reason: "증명 검증 실패" });
+    const quote = QuoteV1Schema.parse((await quoteAt("seoul-glow", 2, { zkOfferProof: bundle() })).data);
+    expect(quote.priceKrw).toBe(340000);
+    const db = clinicStore();
+    await db.putOffer({ ...(await db.offer(MINT_OFFER))!, id: "of_mint_plain", zkClauses: undefined, priceKrw: 120000 });
+    const plain = QuoteV1Schema.parse((await quoteAt("mint", 2, { zkOfferProof: bundle() })).data);
+    expect([plain.priceKrw, plain.event?.zkClauses, plain.offerApplied]).toEqual([120000, undefined, undefined]);
   });
 });
 
@@ -450,6 +552,27 @@ describe("agent card", () => {
     });
     expect(referral).toMatchObject({ uri: "https://pibu.app/ext/referral/v1", required: false });
     expect(card.skills.map((s: { id: string }) => s.id)).toEqual(["clinic.offers", "clinic.quote", "clinic.availability", "clinic.book", "clinic.cancel"]);
+  });
+
+  it("declares the zk-offer-proof extension (03 card example), empty env values counting as unset", async () => {
+    const zkExtension = async () =>
+      ((await clinicAgent.card("mint", "https://pibu.example")) as Record<string, any>).capabilities.extensions.find(
+        (extension: { uri: string }) => extension.uri === "https://pibu.app/ext/zk-offer-proof/v1",
+      );
+    delete process.env.ZK_CHAIN_ID;
+    delete process.env.ZK_REGISTRY_ADDRESS;
+    const declared = { chainId: 84532, registry: "0xcf47152e720508bf8c757a55aa30956ca8b58857" };
+    expect(await zkExtension()).toEqual({
+      uri: "https://pibu.app/ext/zk-offer-proof/v1",
+      description: expect.stringContaining("metadata.offerProof"),
+      required: false,
+      params: declared,
+    });
+    process.env.ZK_CHAIN_ID = "";
+    process.env.ZK_REGISTRY_ADDRESS = "";
+    expect((await zkExtension()).params).toEqual(declared);
+    process.env.ZK_REGISTRY_ADDRESS = `0x${"12".repeat(20)}`;
+    expect((await zkExtension()).params.registry).toBe(`0x${"12".repeat(20)}`);
   });
 
   it("builds the direct card for a clinic that took over, with the same skill ids", async () => {

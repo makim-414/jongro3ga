@@ -10,7 +10,7 @@ import type { A2ALogEntry, I18nText } from "../domain";
 import { clock } from "../clock";
 import { getStore } from "../store";
 import { agentTokenExpiry, issueAgentToken } from "./auth";
-import { agentFromUrl, EXT_CONSENT, EXT_REFERRAL, jsonRpcUrlFromCard } from "./cards";
+import { agentFromUrl, EXT_CONSENT, EXT_REFERRAL, EXT_ZK_OFFER_PROOF, jsonRpcUrlFromCard } from "./cards";
 import type { AgentRef } from "./contract";
 import { recordA2ALog } from "./log";
 import type { SkillId } from "./schemas";
@@ -321,6 +321,8 @@ function extensionsFor(metadata: Record<string, unknown> | undefined): string[] 
   const list: string[] = [];
   if (metadata?.referralToken !== undefined) list.push(EXT_REFERRAL);
   if (metadata?.consentRef !== undefined) list.push(EXT_CONSENT);
+  // 03 "오퍼 증명 전달": the message lists the extension when metadata carries an offer proof
+  if (metadata?.offerProof !== undefined) list.push(EXT_ZK_OFFER_PROOF);
   return list.length ? list : undefined;
 }
 

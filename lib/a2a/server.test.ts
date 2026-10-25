@@ -56,7 +56,16 @@ describe("agent cards", () => {
       }
       expect(card.supportedInterfaces[0]).toEqual({ url: `${BASE}/a2a/platform/rpc`, protocolBinding: "JSONRPC", protocolVersion: "1.0" });
       expect(card.skills.map((s: { id: string }) => s.id).sort()).toEqual(
-        ["platform.judge_quote", "platform.match_clinics", "platform.recipe", "platform.report_booking", "platform.report_signal", "platform.submit_outcome"],
+        [
+          "platform.anchor_record",
+          "platform.judge_quote",
+          "platform.match_clinics",
+          "platform.recipe",
+          "platform.report_booking",
+          "platform.report_signal",
+          "platform.submit_outcome",
+          "platform.submit_review",
+        ],
       );
     }
   });
@@ -82,6 +91,19 @@ describe("agent cards", () => {
 });
 
 describe("client and server round trip", () => {
+  it("lists the extensions the metadata uses in A2A-Extensions, zk-offer-proof included (03)", async () => {
+    const sent: (string | null)[] = [];
+    setA2AFetch((url, init) => {
+      const req = new Request(url, init);
+      if (req.method === "POST") sent.push(req.headers.get("A2A-Extensions"));
+      return dispatch(req);
+    });
+    const metadata = { referralToken: "t", offerProof: { schema: "pibu/offer-proof@1" } };
+    await sendMessage({ from: YUKI, toCardUrl: PLATFORM_CARD, skillId: "platform.judge_quote", data: judgeData, contextId: "req_01J9Z8", metadata });
+    await sendMessage({ from: YUKI, toCardUrl: PLATFORM_CARD, skillId: "platform.judge_quote", data: judgeData, contextId: "req_01J9Z8" });
+    expect(sent).toEqual(["https://pibu.app/ext/referral/v1,https://pibu.app/ext/zk-offer-proof/v1", null]);
+  });
+
   it("SendMessage platform.judge_quote through the real route returns result.task, one masked log entry", async () => {
     const task = await sendMessage({ from: YUKI, toCardUrl: PLATFORM_CARD, skillId: "platform.judge_quote", data: judgeData, contextId: "req_01J9Z8" });
     expect(task.status.state).toBe("TASK_STATE_COMPLETED");

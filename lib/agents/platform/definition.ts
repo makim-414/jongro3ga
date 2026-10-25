@@ -3,6 +3,7 @@ import { buildAgentCard, rpcUrlFor } from "../../a2a/cards";
 import type { AgentDefinition } from "../../a2a/contract";
 import { recipeSkill } from "./recipe";
 import { judgeQuoteSkill, matchClinicsSkill, reportBookingSkill, reportSignalSkill, submitOutcomeSkill } from "./skills";
+import { anchorRecordSkill, submitReviewSkill } from "./zk-skills";
 
 export const PLATFORM_AGENT_ID = "platform";
 
@@ -30,7 +31,7 @@ export const platformAgent: AgentDefinition = {
         {
           id: "platform.match_clinics",
           name: "Match clinics",
-          description: "Ranks up to five clinics for a procedure request and issues a signed referral token per clinic.",
+          description: "Ranks up to three clinics for a procedure request and issues a signed referral token per clinic.",
           tags: ["matching", "clinic", "referral"],
           inputModes: ["application/json"],
           outputModes: ["application/json"],
@@ -67,6 +68,24 @@ export const platformAgent: AgentDefinition = {
           inputModes: ["application/json"],
           outputModes: ["text/plain"],
         },
+        {
+          id: "platform.anchor_record",
+          name: "Anchor record",
+          description:
+            "Verifies that a completed booking belongs to the calling customer agent, then submits the customer wallet's append proof to the record registry as relayer and issues one visit ticket.",
+          tags: ["zk", "record", "anchor"],
+          inputModes: ["application/json"],
+          outputModes: ["text/plain"],
+        },
+        {
+          id: "platform.submit_review",
+          name: "Submit verified review",
+          description:
+            "Accepts one anonymous review per verified visit using a Semaphore proof and adds it to the clinic and procedure aggregate.",
+          tags: ["zk", "review", "aggregate"],
+          inputModes: ["application/json"],
+          outputModes: ["text/plain"],
+        },
       ],
     });
   },
@@ -80,5 +99,7 @@ export const platformAgent: AgentDefinition = {
     "platform.report_booking": reportBookingSkill,
     "platform.submit_outcome": submitOutcomeSkill,
     "platform.report_signal": reportSignalSkill,
+    "platform.anchor_record": anchorRecordSkill,
+    "platform.submit_review": submitReviewSkill,
   },
 };

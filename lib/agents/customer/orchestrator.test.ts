@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { OutcomeV1Schema, ProcedureRequestForClinicSchema, type ProcedureRequestV1 } from "../../a2a/schemas";
+import type { SendOptions } from "../../a2a/client";
+import { OfferProofV1Schema, OutcomeV1Schema, ProcedureRequestForClinicSchema, RecordAnchorV1Schema, type ProcedureRequestV1 } from "../../a2a/schemas";
+import type { WireTask } from "../../a2a/wire";
 import { resetClock, setClock } from "../../clock";
 import type { TreatmentRecord } from "../../domain/customer";
 import { createMemoryStore, type MemoryStore } from "../../store/memory";
@@ -18,7 +20,7 @@ import {
 } from "./orchestrator";
 import { addRecord, listRecords } from "./records";
 import { ensureDemoCustomer } from "./seed";
-import { D0_ANCHOR } from "../../ui-data/customer";
+import { D0_ANCHOR, ZK_WALLETS } from "../../ui-data/customer";
 import { C, listOf, type InboxItem, type StoredBooking, type StoredQuote } from "./store";
 
 const YUKI = "cus_yuki_done";
@@ -177,12 +179,41 @@ describe("customer orchestrator: recipe -> match -> parallel quotes -> judge", (
     expect(proveOffer).toHaveBeenCalledTimes(1);
     expect(proveOffer).toHaveBeenCalledWith("cus_yuki", "ofr_mint_second");
     const quoteCalls = mock.calls.filter((c) => c.skillId === "clinic.quote");
-    const withProof = quoteCalls.filter((c) => c.metadata?.zkOfferProof);
+    const withProof = quoteCalls.filter((c) => c.metadata?.offerProof);
     expect(withProof.map((c) => c.toCardUrl)).toEqual([expect.stringContaining("/clinics/mint/")]);
+    // a bundle that does not fit pibu/offer-proof@1 (this one's subjectId) goes as it is, under the spec key
+    expect(withProof[0]?.metadata?.offerProof).toEqual({ subjectId: "0xabc", offerId: "ofr_mint_second", today: 1, proofs: [{ proof: "0x1", publicInputs: ["c"] }] });
+    expect(quoteCalls.some((c) => c.metadata?.zkOfferProof !== undefined)).toBe(false);
     const wire = JSON.stringify(mock.calls);
     expect(wire).not.toContain("2026-10-01");
     expect(wire).not.toContain("Secret Clinic");
     expect(wire).not.toContain("123456");
+  });
+
+  it("sends the proof as pibu/offer-proof@1 in metadata.offerProof, naming the clinic, chain and registry", async () => {
+    const subjectId = `0x${"5c".repeat(32)}`;
+    const proofs = [{ proof: "0x2a3b", publicInputs: ["0x01", "29880272"] }];
+    const proveOffer = vi.fn(async (_persona: string, offerId: string) => ({ subjectId, offerId, today: 29880272, proofs }));
+    const matchOffers = vi.fn(async () => [{ clinicId: "cln_mint", offerId: "ofr_mint_rejuran_first_visit", title: "First visit", eligible: true }]);
+    vi.stubEnv("ZK_CHAIN_ID", "");
+    vi.stubEnv("ZK_REGISTRY_ADDRESS", "");
+    const { deps, mock } = setup({}, { zk: { enabled: () => true, matchOffers, proveOffer } });
+    const { shortlist } = await startYuki(deps);
+    const mint =mock.calls.find((c) => c.skillId === "clinic.quote" && c.toCardUrl.includes("/clinics/mint/"));
+    const proof = mint?.metadata?.offerProof;
+    expect(OfferProofV1Schema.safeParse(proof).success).toBe(true);
+    expect(proof).toEqual({
+      schema: "pibu/offer-proof@1",
+      offerId: "ofr_mint_rejuran_first_visit",
+      clinicId: "cln_mint",
+      subjectId,
+      chainId: 84532,
+      registry: "0xcf47152e720508bf8c757a55aa30956ca8b58857",
+      today: 29880272,
+      proofs,
+    });
+    expect(mint?.metadata?.referralToken).toBe("ref.cln_mint.sig");
+    expect(shortlist?.zkProofClinicIds).toEqual(["cln_mint"]);
   });
 });
 
@@ -303,6 +334,124 @@ describe("D0 outcome and check-ins", () => {
     expect(result.sent).toBe(false);
     expect(mock.calls.some((c) => c.skillId === "platform.submit_outcome")).toBe(false);
     expect(result.record.sharedToPlatform).toBe(false);
+  });
+
+  describe("platform.anchor_record after the D0 outcome", () => {
+    const ZK_ON = { zk: { enabled: () => true, matchOffers: async () => [], proveOffer: async () => null } };
+    const TX = `0x${"ab".repeat(32)}`;
+    const agentTask = (state: WireTask["status"]["state"], text: string): WireTask =>
+      state === "TASK_STATE_COMPLETED"
+        ? { id: "tsk_anchor", contextId: "ctx", status: { state }, artifacts: [{ artifactId: "art_anchor", parts: [{ text }] }] }
+        : { id: "tsk_anchor", contextId: "ctx", status: { state, message: { messageId: "msg_anchor", role: "ROLE_AGENT", parts: [{ text }] } } };
+
+    /** The platform answers platform.anchor_record with `answer`; everything else goes to the customer test double. */
+    function withAnchor(answer: (o: SendOptions) => Promise<WireTask>, overrides = ZK_ON) {
+      const { deps, mock } = setup({}, overrides);
+      const anchorCalls: SendOptions[] = [];
+      deps.send = async (o) => {
+        if (o.skillId !== "platform.anchor_record") return mock.send(o);
+        anchorCalls.push(o);
+        return answer(o);
+      };
+      return { deps, mock, anchorCalls };
+    }
+
+    const bookingRecord = async () => (await listRecords(store, YUKI)).find((r: TreatmentRecord) => r.source === "booking");
+
+    it("stores the tx the platform relayed and sends a valid pibu/record-anchor@1 for the clinic's booking", async () => {
+      const { deps, anchorCalls } = withAnchor(async () => agentTask("TASK_STATE_COMPLETED", `anchored ${TX}`));
+      const booking = await confirmedBooking(deps);
+      const result = await submitOutcome(deps, YUKI, booking.id, form);
+
+      expect(anchorCalls).toHaveLength(1);
+      const call = anchorCalls[0]!;
+      expect(call.from).toEqual({ role: "customer", agentId: "cag_7f3k2" });
+      expect(call.toCardUrl).toBe("https://pibu.example/a2a/platform/agent-card.json");
+      expect(call.contextId).toBe(booking.requestId);
+      expect(RecordAnchorV1Schema.safeParse(call.data).success).toBe(true);
+      expect(call.data).toMatchObject({
+        schema: "pibu/record-anchor@1",
+        bookingId: "bkg_5521",
+        clinicId: "cln_seoul_glow",
+        procedureId: "rejuran_healer",
+        subjectId: ZK_WALLETS.cus_yuki_done!.subjectId,
+      });
+      expect(result.record.anchor).toEqual({ subjectId: ZK_WALLETS.cus_yuki_done!.subjectId, version: 1, tx: TX, recordHash: D0_ANCHOR.recordHash });
+      expect((await bookingRecord())?.anchor?.tx).toBe(TX);
+    });
+
+    it("keeps the demo anchor values when the platform fails, refuses or does not answer, and says why", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const answers: Array<() => Promise<WireTask>> = [
+        async () => agentTask("TASK_STATE_FAILED", "anchor_failed: ZK server unreachable: fetch failed"),
+        async () => agentTask("TASK_STATE_REJECTED", "booking_not_completed: bkg_5521 is confirmed"),
+        async () => agentTask("TASK_STATE_COMPLETED", "Received."),
+        async () => Promise.reject(new Error("ECONNREFUSED")),
+      ];
+      for (const answer of answers) {
+        store = createMemoryStore();
+        await ensureDemoCustomer(store, YUKI);
+        setClock(NOW);
+        const { deps, anchorCalls } = withAnchor(answer);
+        const booking = await confirmedBooking(deps);
+        const result = await submitOutcome(deps, YUKI, booking.id, form);
+        expect(anchorCalls).toHaveLength(1);
+        expect(result.record.anchor).toEqual({ subjectId: ZK_WALLETS.cus_yuki_done!.subjectId, version: 1, tx: D0_ANCHOR.tx, recordHash: D0_ANCHOR.recordHash });
+      }
+      const reasons = warn.mock.calls.map((args) => String(args[0]));
+      expect(reasons).toHaveLength(4);
+      expect(reasons[0]).toContain("TASK_STATE_FAILED: anchor_failed: ZK server unreachable");
+      expect(reasons[1]).toContain("booking_not_completed");
+      expect(reasons[3]).toContain("ECONNREFUSED");
+      warn.mockRestore();
+    });
+
+    it("gives up on a platform that does not answer in time", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const { deps } = withAnchor(() => new Promise<WireTask>(() => undefined));
+      const booking = await confirmedBooking(deps);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const pending = submitOutcome(deps, YUKI, booking.id, form);
+        await vi.advanceTimersByTimeAsync(45_000);
+        const result = await pending;
+        expect(result.record.anchor?.tx).toBe(D0_ANCHOR.tx);
+        expect(String(warn.mock.calls[0]?.[0])).toContain("no answer in time");
+      } finally {
+        vi.useRealTimers();
+        warn.mockRestore();
+      }
+    });
+
+    it("does not anchor an outcome the customer did not share, nor without ZK, and keeps today's demo anchor", async () => {
+      const notShared = withAnchor(async () => agentTask("TASK_STATE_COMPLETED", `anchored ${TX}`));
+      const booking = await confirmedBooking(notShared.deps);
+      await setConsent(store, YUKI, "shareAnonymizedRecords", false);
+      const local = await submitOutcome(notShared.deps, YUKI, booking.id, form);
+      expect(notShared.anchorCalls).toHaveLength(0);
+      expect(local.record.anchor?.tx).toBe(D0_ANCHOR.tx);
+
+      store = createMemoryStore();
+      await ensureDemoCustomer(store, YUKI);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const zkOff = withAnchor(async () => agentTask("TASK_STATE_COMPLETED", `anchored ${TX}`), { zk: { enabled: () => false, matchOffers: async () => [], proveOffer: async () => null } });
+      const offBooking = await confirmedBooking(zkOff.deps);
+      const off = await submitOutcome(zkOff.deps, YUKI, offBooking.id, form);
+      expect(zkOff.anchorCalls).toHaveLength(0);
+      expect(off.record.anchor?.tx).toBe(D0_ANCHOR.tx);
+      warn.mockRestore();
+    });
+
+    it("keeps the relayed tx when the D0 outcome is submitted again", async () => {
+      let answer = agentTask("TASK_STATE_COMPLETED", `anchored ${TX}`);
+      const { deps, anchorCalls } = withAnchor(async () => answer);
+      const booking = await confirmedBooking(deps);
+      await submitOutcome(deps, YUKI, booking.id, form);
+      answer = agentTask("TASK_STATE_REJECTED", "already_anchored: bkg_5521 has a record on chain");
+      const again = await submitOutcome(deps, YUKI, booking.id, { ...form, satisfaction: 4 });
+      expect(anchorCalls).toHaveLength(1);
+      expect(again.record.anchor?.tx).toBe(TX);
+    });
   });
 
   it("answers a D7 check-in with submit_outcome built on the D0 values", async () => {
